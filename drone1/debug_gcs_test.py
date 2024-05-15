@@ -233,6 +233,17 @@ def handle_telemetry(keep_running, print_telemetry, master):
     """
     while keep_running[0]:
         try:
+            test1 = "TEST1"
+            
+            msg1 = mavutil.mavlink.MAVLink_statustext_message(
+                mavutil.mavlink.MAV_SEVERITY_INFO, 
+                test1.encode("utf-8")
+                # packet[0:40]
+            )
+            # print(len(packet))
+            master.mav.send(msg1)
+
+
             # Receive SAR Comms -> Target Localization
             msg = master.recv_match()
             if msg and msg.get_type() == 'STATUSTEXT':
