@@ -88,12 +88,14 @@ Always ensure that you comply with all local laws and regulations when operating
 
 # Imports
 import logging
-import socket
 import struct
 import threading
+import subprocess
 import time
+import math
 import pandas as pd
 import os
+from pymavlink import mavutil
 
 from enum import Enum
 
@@ -108,8 +110,9 @@ class Mission(Enum):
     SMART_SWARM = 2
 
 
-# Sim Mode
-sim_mode = True  # Set this variable to True for simulation mode (the ip of all drones will be the same)
+serial_mavlink = True
+Radio_Serial_Baudrate = 57600
+Pymavlink_Port = 13540
 
 telem_struct_fmt = '=BHHBBIddddddddBIB'
 command_struct_fmt = '=B B B B B I B'
@@ -142,13 +145,77 @@ else:
     # Add all drones from config file to drones list
     drones = [drone for _, drone in config_df.iterrows()]
 
+# Mavlink Router Config
+try:
+    router_config_directory = "gcs_mavlink_conf"
+    
+    #CLEAR CONTENTS OF ROUTER CONFIG DIRECTORY
+    if os.path.exists(router_config_directory) and os.path.isdir(router_config_directory):
+        # Get a list of all files in the directory
+        files = os.listdir(router_config_directory)
+    
+        # Iterate over each file and delete it
+        for file_name in files:
+            file_path = os.path.join(router_config_directory, file_name)
+            os.remove(file_path)
+    
+    else:
+        os.makedirs(router_config_directory)
+
+    router_procs = []
+    for drone_config in drones:
+        Radio_Serial_Port = drone_config['serial_port']
+        Radio_UDP_Port = drone_config['debug_port']
+        
+        #MAVLINK SOURCE CONFIG
+        if serial_mavlink:
+            logging.info("Radio Connection Through Serial Enabled. Connecting to Radio via Serial")
+            mavlink_source = f"/dev/{Radio_Serial_Port}"
+            config_content = f"""\
+[General]
+VERBOSE = True
+
+[UartEndpoint Self]     
+Mode = Server
+Device = {mavlink_source}
+Baud = {Radio_Serial_Baudrate}
+
+[UdpEndpoint GCS]
+Mode = Normal
+Address = 127.0.0.1
+Port = {drone_config['debug_port']}
+
+[UdpEndpoint QGC]
+Mode = Normal
+Address = 127.0.0.1
+Port = 14550
+"""  
+        else:
+            logging.info("Radio Connection Through UDP Enabled. Attempting to connect to Radio via UDP")
+            mavlink_source = f"127.0.0.1:{Radio_UDP_Port}"
+
+        logging.info(f"Using MAVLink source: {mavlink_source}")
+        
+        
+        #WRITE CONFIG FILE
+        config_name = f"drone{drone_config['hw_id']}.conf"
+        with open(os.path.join(router_config_directory, config_name), "w") as file:
+            file.write(config_content)
+
+        #START MAVLINK ROUTER PROCESS
+        router_procs.append(subprocess.Popen(f"mavlink-routerd -c {router_config_directory}/{config_name}", shell=True))
+
+except Exception as e:
+    logging.error(f"An error occurred in Mavlink Router Initialize: {e}")
+
+
 # Function to send commands
-def send_command(trigger_time, sock, coordinator_ip, debug_port, hw_id, pos_id, mission, state):
+def send_command(master, mission):
     """
     This function prepares and sends commands.
 
     :param n: An integer used to compute trigger_time.
-    :param sock: The socket through which data will be sent.
+    :param master: The pymavlink master through which data will be sent.
     :param coordinator_ip: The IP address of the coordinator.
     :param debug_port: The port used for sending data.
     :param hw_id: The hardware ID.
@@ -157,59 +224,41 @@ def send_command(trigger_time, sock, coordinator_ip, debug_port, hw_id, pos_id, 
     :param state: The state value.
     """
     try:
-        # Prepare the command data
-        header = 55  # Constant
-        terminator = 66  # Constant
-
-        # Encode the data
-        data = struct.pack(command_struct_fmt, header, hw_id, pos_id, mission, state, trigger_time, terminator)
-
+        text = f"FROM GCS {mission}"
         # Send the command data
-        sock.sendto(data, (coordinator_ip, debug_port))
-        logger.info(f"Sent {len(data)} byte command: Header={header}, HW_ID={hw_id}, Pos_ID={pos_id}, Mission={mission}, State={state}, Trigger Time={trigger_time}, Terminator={terminator}")
+        master.mav.statustext_send(
+            mavutil.mavlink.MAV_SEVERITY_INFO,
+            text.encode('utf-8')[:50]
+        )
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
         logger.error(f"An error occurred: {e}")
 
-import math
 
 
-
-def handle_telemetry(keep_running, print_telemetry, sock):
+def handle_telemetry(keep_running, print_telemetry, master):
     """
     This function continuously receives and handles telemetry data.
 
     :param keep_running: A control flag for the while loop. 
                          When it's False, the function stops receiving data.
     :param print_telemetry: A flag to control if the telemetry data should be printed.
-    :param sock: The socket from which data will be received.
+    :param master: The pymavlink master from which data will be received.
     """
     while keep_running[0]:
         try:
-            # Receive telemetry data
-            data, addr = sock.recvfrom(1024)
+            # Receive SAR Comms -> Target Localization
+            msg = master.recv_match()
+            if msg and msg.get_type() == 'STATUSTEXT':
+                print(f"ID: {msg.get_srcSystem()} RSSI: {msg.text}")
 
-            # If received data is not of correct size, log the error and continue
-            if len(data) != telem_packet_size:
-                logger.error(f"Received packet of incorrect size. Expected {telem_packet_size}, got {len(data)}.")
-                continue
 
-            # Decode the data
-            telemetry_data = struct.unpack(telem_struct_fmt, data)
-            header, terminator = telemetry_data[0], telemetry_data[-1]
+            # Receive telemetry data -> Agent Localization
+            if msg and msg.get_type() == 'UTM_GLOBAL_POSITION':
+                print(f"ID: {msg.get_srcSystem()} LAT: {msg.lat} LON: {msg.lon} ALT: {msg.alt}")
+                print(f"VE: {msg.vx} VN: {msg.vy} VD: {msg.vz}")
 
-            # If header or terminator are not as expected, log the error and continue
-            if header != 77 or terminator != 88:
-                logger.error("Invalid header or terminator received in telemetry data.")
-                continue
-
-            # If the print_telemetry flag is True, print the decoded data
-            # if print_telemetry[0]:
-            #     hw_id, pos_id, state, mission, trigger_time, position_lat, position_long, position_alt, velocity_north, velocity_east, velocity_down, yaw, battery_voltage, follow_mode, telemetry_update_time = telemetry_data[1:-1]
-            #     # Debug log with all details
-            #     logger.info(f"Received telemetry at {telemetry_update_time}: Header={header}, HW_ID={hw_id}, Pos_ID={pos_id}, State={State(state).name}, Mission={Mission(mission).name}, Trigger Time={trigger_time}, Position Lat={position_lat}, Position Long={position_long}, Position Alt={position_alt:.1f}, Velocity North={velocity_north:.1f}, Velocity East={velocity_east:.1f}, Velocity Down={velocity_down:.1f}, Yaw={yaw:.1f}, Battery Voltage={battery_voltage:.1f}, Follow Mode={follow_mode}, Terminator={terminator}")
-                
         except (OSError, struct.error) as e:
             # If there is an OSError or an error in unpacking the data, log the error and break the loop
             logger.error(f"An error occurred: {e}")
@@ -227,38 +276,50 @@ keep_running = [True]
 try:
     for drone_config in drones:
         # Extract variables
-        if sim_mode:
-            coordinator_ip = '172.18.218.35'  # WSL IP
-        else:
-            coordinator_ip = drone_config['ip']
-        debug_port = int(drone_config['debug_port'])  # Debug port
-        gcs_ip = drone_config['gcs_ip']  # GCS IP
-        hw_id = drone_config['hw_id']  # Hardware ID
-        pos_id = drone_config['pos_id']  # Position ID
+        coordinator_ip = drone_config['ip']
+        debug_port = int(drone_config['debug_port'])    # Debug port
+        gcs_ip = drone_config['gcs_ip']                 # GCS IP
+        hw_id = drone_config['hw_id']                   # Hardware ID
+        pos_id = drone_config['pos_id']                 # Position ID
 
         # Log information
-        logger.info(f"Drone {hw_id} is listening and sending on IP {coordinator_ip} and port {debug_port}")
+        if serial_mavlink:
+            logger.info(f"Drone {hw_id} is listening and sending on Port {Radio_Serial_Port} at rate {Radio_Serial_Baudrate}")
+        else:
+            logger.info(f"Drone {hw_id} is listening and sending on IP {coordinator_ip} and port {debug_port}")
 
-        # Socket for communication
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind((gcs_ip, debug_port))
+        # Pymavlink Connection
+        try:
+            master = mavutil.mavlink_connection(f"udp:localhost:{drone_config['debug_port']}", source_system = 99)
+        except Exception as e:
+            logging.error(f"An error occured Pymavlink Initialize: {e}")
 
         # This flag controls whether telemetry is printed to the screen. 
         # We use a list so the changes in the main thread can be seen by the telemetry threads.
         print_telemetry = [True]
 
         # Start the telemetry thread
-        telemetry_thread = threading.Thread(target=handle_telemetry, args=(keep_running, print_telemetry, sock))
+        telemetry_thread = threading.Thread(target=handle_telemetry, args=(keep_running, print_telemetry, master))
         telemetry_thread.start()
 
         # Add to the drones_threads
-        drones_threads.append((sock, telemetry_thread, coordinator_ip, debug_port, hw_id, pos_id))
+        drones_threads.append((master, telemetry_thread, coordinator_ip, debug_port, hw_id, pos_id))
 
     # Main loop for command input
     mission = 0
     state = 0
     n = 0
+    time.sleep(1)
     while True:
+    
+    #     text = f"FROM GCS {mission}"
+    #     # Send the command data
+    #     master.mav.statustext_send(
+    #         mavutil.mavlink.MAV_SEVERITY_INFO,
+    #         text.encode('utf-8')[:50]
+    #     )
+    #     time.sleep(1)
+        
         command = input("\n Enter 't' for takeoff, 's' for swarm, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
         if command.lower() == 'q':
             break
@@ -296,9 +357,9 @@ try:
         for _, _, _, _, _, _ in drones_threads:
             print_telemetry[0] = False
         # Send command to each drone
-        for sock, _, coordinator_ip, debug_port, hw_id, pos_id in drones_threads:
+        for master, _, coordinator_ip, debug_port, hw_id, pos_id in drones_threads:
             trigger_time = int(time.time()) + int(n)  # Now + n seconds
-            send_command(trigger_time, sock, coordinator_ip, debug_port, hw_id, pos_id, mission, state)
+            send_command(master, mission)
             # Turn on telemetry printing after sending commands
         for _, _, _, _, _, _ in drones_threads:
             print_telemetry[0] = True
@@ -309,9 +370,9 @@ finally:
     # When KeyboardInterrupt happens or an error occurs, stop the telemetry threads
     keep_running[0] = False
 
-    for sock, telemetry_thread, _, _, _, _ in drones_threads:
-        # Close the socket
-        sock.close()
+    for master, telemetry_thread, _, _, _, _ in drones_threads:
+        # Close the pymavlink connection
+        master.close()
         # Join the thread
         telemetry_thread.join()
 
