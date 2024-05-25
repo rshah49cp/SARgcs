@@ -126,9 +126,12 @@ config_df = pd.read_csv('config.csv')
 
 # Drones list
 drones = {}
+drone_count = 0
+ack_count = 0
 for _, row in config_df.iterrows():
     hw_id = row['hw_id']
     drones[hw_id] = DroneConfig(drones, hw_id)
+    drone_count = drone_count + 1
 
 
 # Threading Init
@@ -281,7 +284,6 @@ def get_drone_state(drones, hw_id):
         "update_time": int(drone.last_update_timestamp),
         "RSSI": drone.rssi
         }
-        print(drone_state)
         return drone_state
 
 def read_packets(master):
@@ -306,7 +308,15 @@ def stop_state_tracking(state_update_thread, executor):
 
 
 # -------- COMMAND SEND FUNCTIONS -------- #
-def send_command(master, mission):
+def check_all_drone_ack(drones, ack_count): # simple loops that checks all drone acks
+    for drone in drones.values():
+        if drone.gcs_msn_ack is False:
+            ack_count = 0 # reset the ack count until all drones acks have arrived
+            return False
+    ack_count = ack_count + 1
+    return True
+
+def send_command(master, mission, drones):
     """
     This function prepares and sends commands.
 
@@ -320,16 +330,31 @@ def send_command(master, mission):
     :param state: The state value.
     """
     try:
-        text = f"FROM GCS {mission}"
-        # Send the command data
-        master.mav.statustext_send(
-            mavutil.mavlink.MAV_SEVERITY_INFO,
-            text.encode('utf-8')[:50]
-        )
+        timer = threading.Timer(5.0, cmd_timeout)
+        timer.start()
+
+        while True:
+            check_all_drone_ack(drones, ack_count)
+            
+            # Send the command data
+            master.mav.statustext_send(
+                mavutil.mavlink.MAV_SEVERITY_INFO,
+                f"msn {mission}".encode('utf-8')[:50]
+            )
+
+            if (ack_count == drone_count):
+                timer.cancel
+                break
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
         logger.error(f"An error occurred: {e}")
+
+def cmd_timeout():
+    # Emergency Ground All Drones if no ACK is recieved
+    while True:
+        for drone in drones:
+            send_command(drone.master, 101)
 
 
 # -------- MAIN CODE -------- #
@@ -350,45 +375,43 @@ try:
     n = 0
     time.sleep(1)
     while True:
-        get_drone_state(drones, 24)
-        time.sleep(1)
-        # command = input("\n Enter 't' for takeoff, 's' for swarm, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
-        # if command.lower() == 'q':
-        #     break
-        # elif command.lower() == 's':
-        #     mission = 2  # Setting mission to smart_swarm
-        #     n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
-        #     if int(n) == 0:
-        #         continue
-        #     state = 1
-        # elif command.lower() == 'c':
-        #     mission = 1  # Setting mission to csv_droneshow
-        #     n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
-        #     if int(n) == 0:
-        #         continue
-        #     state = 1
-        # elif command.lower() == 'n':
-        #     mission = 0  # Unsetting the mission
-        #     state = 0
-        #     n = 0  # Unsetting the trigger time
-        # elif command.lower() == 't':
-        #     mission = 10
-        #     n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
-        #     if int(n) == 0:
-        #         continue
-        # elif command.lower() == 'l':
-        #     mission = 101
-        #     n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
-        #     if int(n) == 0:
-        #         continue       
-        # else:
-        #     logger.warning("Invalid command.")
-        #     continue
+        command = input("\n Enter 't' for takeoff, 's' for swarm, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
+        if command.lower() == 'q':
+            break
+        elif command.lower() == 's':
+            mission = 2  # Setting mission to smart_swarm
+            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
+            if int(n) == 0:
+                continue
+            state = 1
+        elif command.lower() == 'c':
+            mission = 1  # Setting mission to csv_droneshow
+            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
+            if int(n) == 0:
+                continue
+            state = 1
+        elif command.lower() == 'n':
+            mission = 0  # Unsetting the mission
+            state = 0
+            n = 0  # Unsetting the trigger time
+        elif command.lower() == 't':
+            mission = 10
+            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
+            if int(n) == 0:
+                continue
+        elif command.lower() == 'l':
+            mission = 101
+            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
+            if int(n) == 0:
+                continue       
+        else:
+            logger.warning("Invalid command.")
+            continue
 
-        # # Send command to each drone
-        # for master, hw_id in drones_threads:
-        #     trigger_time = int(time.time()) + int(n)  # Now + n seconds
-        #     send_command(master, mission)
+        # Send command to each drone
+        for master, hw_id in drones_threads:
+            trigger_time = int(time.time()) + int(n)  # Now + n seconds
+            send_command(master, mission, drones)
 
 except (ValueError, OSError, KeyboardInterrupt) as e:
     # Catch any exceptions that occur during the execution
