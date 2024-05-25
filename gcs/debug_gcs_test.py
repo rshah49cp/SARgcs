@@ -330,7 +330,7 @@ def send_command(master, mission, drones):
     :param state: The state value.
     """
     try:
-        timer = threading.Timer(5.0, cmd_timeout)
+        timer = threading.Timer(5.0, cmd_timeout, args=(drones,))
         timer.start()
 
         while True:
@@ -343,18 +343,22 @@ def send_command(master, mission, drones):
             )
 
             if (ack_count == drone_count):
-                timer.cancel
+                timer.cancel()
                 break
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
         logger.error(f"An error occurred: {e}")
 
-def cmd_timeout():
+def cmd_timeout(drones):
     # Emergency Ground All Drones if no ACK is recieved
+    print("WARNING: COMMAND TIMEOUT, EMERGENCY LANDING DRONES")
     while True:
-        for drone in drones:
-            send_command(drone.master, 101)
+        for drone in drones.values():
+            drone.master.mav.statustext_send(
+                mavutil.mavlink.MAV_SEVERITY_INFO,
+                f"msn 101".encode('utf-8')[:50]
+            )
 
 
 # -------- MAIN CODE -------- #
@@ -418,7 +422,7 @@ except (ValueError, OSError, KeyboardInterrupt) as e:
     logger.error(f"An error occurred: {e}")
 finally:
     # When KeyboardInterrupt happens or an error occurs, stop the telemetry threads
-    stop_state_tracking(state_update_thread)
+    stop_state_tracking(state_update_thread, executor)
 
     for master, hw_id in drones_threads:
         # Close the pymavlink connection
