@@ -274,11 +274,11 @@ def update_state(data):
         if msg_type == 'STATUSTEXT':
             # print(f"sts: {data}")
             # print("mesg type is status")
-            split_string = data.text.split()
+            split_string = data.text.split(' ')
             if split_string[0] == 'RSSI':
                 set_drone_config(None, None, None, None, None, None, None, None, None, None, split_string[1])
                 print(f"rssi being updated through status message {split_string[1]}")
-            elif split_string[0] == 'msn':
+            elif split_string[0] == 'msn' and hw_id > 10 and hw_id < 100:
                 # print(data.text)
                 decode_status_text(split_string, hw_id)
 
@@ -300,7 +300,7 @@ def update_state(data):
 def decode_status_text(text, sys_id): # input text is already split
     components = text # format: msn_#_[ack] [ack] is only added if sent from a drone. ignore if from gcs
     mission_code = [int(component) for component in components if component.isdigit()][0]
-    if mission_code and components[1] == 'ack':
+    if mission_code and components[2] == 'ack':
         if (mission_code == mission):
             drones[sys_id].gcs_msn_ack = True
             print(f"got ack from drone {sys_id}")
@@ -353,12 +353,9 @@ def stop_state_tracking(state_update_thread, executor):
 
 # -------- COMMAND SEND FUNCTIONS -------- #
 def check_all_drone_ack(): # simple loops that checks all drone acks
-    ack_count = 0
     for drone in drones.values():
         if drone.gcs_msn_ack is False:
-            ack_count = 0 # reset the ack count until all drones acks have arrived
             return False
-    ack_count = ack_count + 1
     return True
 
 def send_command(mission):
@@ -383,7 +380,7 @@ def send_command(mission):
             # Send the command data
             cmd_send_master.mav.statustext_send(
                 mavutil.mavlink.MAV_SEVERITY_INFO,
-                f"msn {mission}".encode('utf-8')[:50]
+                f"msn {mission} ack".encode('utf-8')[:50]
             )
             time.sleep(0.2)
 
