@@ -102,6 +102,8 @@ from drone_config import DroneConfig
 
 from enum import Enum
 
+message_types = ['STATUSTEXT', 'UTM_GLOBAL_POSITION', 'ATTITUDE', 'SYS_STATUS']
+
 class State(Enum):
     IDLE = 0
     ARMED = 1
@@ -124,7 +126,7 @@ logger = logging.getLogger(__name__)
 # Read the config file
 config_df = pd.read_csv('config.csv')
 
-# Drones list
+# Initialize Drones Dict from Library
 drones = {}
 drone_count = 0
 ack_count = 0
@@ -166,7 +168,7 @@ Mode = Server
 Device = {mavlink_source}
 Baud = {Radio_Serial_Baudrate}
 
-[UdpEndpoint GCS]
+[UdpEndpoint Telemetry]
 Mode = Normal
 Address = 127.0.0.1
 Port = {Pymavlink_Port}
@@ -175,16 +177,13 @@ Port = {Pymavlink_Port}
 Mode = Normal
 Address = 127.0.0.1
 Port = 14550
-"""  
-    for hw_id, drone_config in drones.items():
-        endpoint_config = f"""
-[UdpEndpoint Drone_{drone_config.hw_id}]
+
+[UdpEndpoint Commands]
 Mode = Normal
 Address = 127.0.0.1
-Port = {Pymavlink_Port + drone_config.hw_id}
+Port = {Pymavlink_Port + 1}
 """
-    config_content += endpoint_config
-          
+
     # Write Config File
     config_name = f"radio.conf"
     with open(os.path.join(router_config_directory, config_name), "w") as file:
@@ -193,18 +192,42 @@ Port = {Pymavlink_Port + drone_config.hw_id}
     # Start Mavlink Router Process
     router_procs.append(subprocess.Popen(f"mavlink-routerd -c {router_config_directory}/{config_name}", shell=True))
 
+    time.sleep(1)
+
+    print("Attempting to Connect to MavLink -> Wait for Heartbeats")
     state_tracking_master = mavutil.mavlink_connection(f"udp:localhost:{Pymavlink_Port}")
-    
-    for hw_id, drone_config in drones.items():
-        # Connect Pymavlink Connection
-        drone_config.master = mavutil.mavlink_connection(f"udp:localhost:{Pymavlink_Port + drone_config.hw_id}", system = drone_config.hw_id)
+    state_tracking_master.wait_heartbeat()
+    logging.info("Established Telemetry Tracking")
+    cmd_send_master = mavutil.mavlink_connection(f"udp:localhost:{Pymavlink_Port + 1}")
+    cmd_send_master.wait_heartbeat()
+    logging.info("Established Command Link")
+
+    for drone in drones.values():
+        while (drone.cmd_connection_confirm == False):
+            ready_cmd = select.select([cmd_send_master.fd], [], [], 0.02)
+            if ready_cmd[0]:
+                msg = cmd_send_master.recv_match()
+                if (msg.get_srcSystem() == drone.hw_id):
+                    logging.info(f"Drone {drone.hw_id} CMD Connection Confirmed")
+                    drone.cmd_connection_confirm = True
+            
+        while (drone.telem_connection_confirm == False):
+            ready_telem = select.select([state_tracking_master.fd], [], [], 0.02)
+            if ready_telem[0]:
+                msg = state_tracking_master.recv_match()
+                if (msg.get_srcSystem() == drone.hw_id):
+                    logging.info(f"Drone {drone.hw_id} Telem Connection Confirmed")
+                    drone.telem_connection_confirm = True
+
+    logging.info("MAVLINK INIT COMPLETED")
+    time.sleep(1)
+
 
 
 except Exception as e:
     logging.error(f"An error occurred in Mavlink Connection Initialize: {e}")
 
 
-time.sleep(1)
 
 # -------- STATE UPDATE FUNCTIONS -------- # 
 def set_drone_config(hw_id, pos_id, state, mission, trigger_time, position, velocity, yaw, battery, last_update_timestamp, rssi):
@@ -232,28 +255,41 @@ def set_drone_config(hw_id, pos_id, state, mission, trigger_time, position, velo
     drones[hw_id] = drone
 
 
-def update_state(drones, data):
+def update_state(data):
     msg_type = data.get_type()
-    if msg_type == "STATUSTEXT" or msg_type == "UTM_GLOBAL_POSITION" or msg_type == "ATTITUDE" or msg_type == "SYS_STATUS":
+    if msg_type in message_types: # array of message types are at top of file
         # Ensures Drone_config object will contain position information - Also helps to filter out non-drone systems
         hw_id = data.get_srcSystem()
-        # Create a new instance for the drone if not present
+
+        # Create a new instance for the drone if not present (including this drone)
+        if hw_id-1 in drones:
+            logging.info(f"Command/Ack Message Recieved->")
+            hw_id = hw_id-1
+        
         if hw_id not in drones:
-            logging.info(f"Receiving Telemetry from UNKNOWN Drone ID= {hw_id}")
+            logging.info(f"Received Message from Unknown Drone ID= {hw_id}")
             return
+        else:
+            logging.info(f"Received telemetry from Drone {hw_id}")
 
         # Update RSSI Values
         if msg_type == 'STATUSTEXT':
+            # print(f"sts: {data}")
+            # print("mesg type is status")
             split_string = data.text.split()
             if split_string[0] == 'RSSI':
                 set_drone_config(None, None, None, None, None, None, None, None, None, None, split_string[1])
+                print(f"rssi being updated through status message {split_string[1]}")
+            elif split_string[0] == 'msn':
+                # print(data.text)
+                decode_status_text(split_string, hw_id)
 
         # Update Position and Velocity Values
         if msg_type == 'UTM_GLOBAL_POSITION':
-            logging.debug(f"Received telemetry from Drone {hw_id}")
             position = {'lat': data.lat / 1E7, 'long': data.lon / 1E7, 'alt': data.alt / 1E7}
             velocity = {'north': data.vx, 'east': data.vy, 'down': data.vz}
             set_drone_config(hw_id, None, None, None, None, position, velocity, None, None, data.time, None)
+            # print(f"Drone: {hw_id} GPS: {data}\n")
         
         # Update Yaw Values
         if msg_type == 'ATTITUDE':
@@ -263,7 +299,16 @@ def update_state(drones, data):
         if msg_type == 'SYS_STATUS':
             set_drone_config(hw_id, None, None, None, None, None, None, None, data.voltage_battery, None, None)
 
-def get_drone_state(drones, hw_id):
+def decode_status_text(text, sys_id): # input text is already split
+    components = text # format: msn_#_[ack] [ack] is only added if sent from a drone. ignore if from gcs
+    mission_code = [int(component) for component in components if component.isdigit()][0]
+    if mission_code and components[2] == 'ack':
+        drones[sys_id].gcs_msn_ack = True
+        print(f"got ack from drone {sys_id}")
+
+
+
+def get_drone_state(hw_id):
     drone = drones.get(hw_id)
     if drone is not None:
         drone_state = {
@@ -292,7 +337,7 @@ def read_packets(master):
         if ready[0]:
             msg = master.recv_match()
             if (msg):
-                update_state(drones, msg)
+                update_state(msg)
 
 
 def start_state_tracking(master):
@@ -308,7 +353,7 @@ def stop_state_tracking(state_update_thread, executor):
 
 
 # -------- COMMAND SEND FUNCTIONS -------- #
-def check_all_drone_ack(drones, ack_count): # simple loops that checks all drone acks
+def check_all_drone_ack(ack_count): # simple loops that checks all drone acks
     for drone in drones.values():
         if drone.gcs_msn_ack is False:
             ack_count = 0 # reset the ack count until all drones acks have arrived
@@ -316,7 +361,7 @@ def check_all_drone_ack(drones, ack_count): # simple loops that checks all drone
     ack_count = ack_count + 1
     return True
 
-def send_command(master, mission, drones):
+def send_command(master, mission):
     """
     This function prepares and sends commands.
 
@@ -330,11 +375,11 @@ def send_command(master, mission, drones):
     :param state: The state value.
     """
     try:
-        timer = threading.Timer(5.0, cmd_timeout, args=(drones,))
+        timer = threading.Timer(5.0, cmd_timeout)
         timer.start()
 
         while True:
-            check_all_drone_ack(drones, ack_count)
+            check_all_drone_ack(ack_count)
             
             # Send the command data
             master.mav.statustext_send(
@@ -350,7 +395,7 @@ def send_command(master, mission, drones):
         # If there is an OSError or an error in packing the data, log the error
         logger.error(f"An error occurred: {e}")
 
-def cmd_timeout(drones):
+def cmd_timeout():
     # Emergency Ground All Drones if no ACK is recieved
     print("WARNING: COMMAND TIMEOUT, EMERGENCY LANDING DRONES")
     while True:
@@ -415,7 +460,7 @@ try:
         # Send command to each drone
         for master, hw_id in drones_threads:
             trigger_time = int(time.time()) + int(n)  # Now + n seconds
-            send_command(master, mission, drones)
+            send_command(master, mission)
 
 except (ValueError, OSError, KeyboardInterrupt) as e:
     # Catch any exceptions that occur during the execution

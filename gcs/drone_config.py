@@ -23,6 +23,8 @@ class DroneConfig:
     def __init__(self, drones, _hw_id=None, _master=None):
         self.hw_id = _hw_id
         self.master = _master
+        self.telem_connection_confirm = False
+        self.cmd_connection_confirm = False
         self.trigger_time = 0
         self.config = self.read_config()
         self.swarm = self.read_swarm()
