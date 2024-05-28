@@ -375,14 +375,15 @@ def send_command(mission):
         timer = threading.Timer(5.0, cmd_timeout)
         timer.start()
 
-        while (check_all_drone_ack() is False):
+        while (check_all_drone_ack() is False and timer.is_alive()):
             
             # Send the command data
+            print("sending new command")
             cmd_send_master.mav.statustext_send(
                 mavutil.mavlink.MAV_SEVERITY_INFO,
                 f"msn {mission} ack".encode('utf-8')[:50]
             )
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         timer.cancel()
 
@@ -393,11 +394,13 @@ def send_command(mission):
 def cmd_timeout():
     # Emergency Ground All Drones if no ACK is recieved
     print("WARNING: COMMAND TIMEOUT, EMERGENCY LANDING DRONES")
-    while True:
+    temp = 0
+    while temp < 10:
         cmd_send_master.mav.statustext_send(
             mavutil.mavlink.MAV_SEVERITY_INFO,
             f"msn 101".encode('utf-8')[:50]
         )
+        temp += 1
         time.sleep(0.2)
 
 
