@@ -372,13 +372,12 @@ def send_command(mission):
     :param state: The state value.
     """
     try:
-        timer = threading.Timer(5.0, cmd_timeout)
+        timer = threading.Timer(10.0, cmd_timeout)
         timer.start()
 
         while (check_all_drone_ack() is False and timer.is_alive()):
             
             # Send the command data
-            print("sending new command")
             cmd_send_master.mav.statustext_send(
                 mavutil.mavlink.MAV_SEVERITY_INFO,
                 f"msn {mission} ack".encode('utf-8')[:50]
@@ -386,6 +385,8 @@ def send_command(mission):
             time.sleep(0.1)
 
         timer.cancel()
+        for drone in drones.values():
+            drone.gcs_msn_ack = False
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
@@ -412,45 +413,39 @@ try:
 
     # Main loop for command input
     mission = 0
-    state = 0
     n = 0
     time.sleep(1)
     while True:
         command = input("\n Enter 't' for takeoff, 's' for swarm, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
+
         if command.lower() == 'q':
             break
         elif command.lower() == 's':
             mission = 2  # Setting mission to smart_swarm
             n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
-            if int(n) == 0:
-                continue
-            state = 1
+            
         elif command.lower() == 'c':
             mission = 1  # Setting mission to csv_droneshow
             n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
-            if int(n) == 0:
-                continue
-            state = 1
+            
         elif command.lower() == 'n':
             mission = 0  # Unsetting the mission
-            state = 0
             n = 0  # Unsetting the trigger time
         elif command.lower() == 't':
             mission = 10
             n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
-            if int(n) == 0:
-                continue
+            
         elif command.lower() == 'l':
             mission = 101
             n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
-            if int(n) == 0:
-                continue       
+            
         else:
             logger.warning("Invalid command.")
-            continue
+
 
         # Send command
         trigger_time = int(time.time()) + int(n)  # Now + n seconds
+        print("here")
         send_command(mission)
 
 except (ValueError, OSError, KeyboardInterrupt) as e:
