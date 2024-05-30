@@ -374,7 +374,9 @@ def send_command(mission_var):
     :param state: The state value.
     """
     global drones
+
     try:
+        print(f"sending command: {mission_var}")
         timer = threading.Timer(10.0, cmd_timeout)
         timer.start()
         # print(f"drone ack: {check_all_drone_ack()}")
@@ -419,6 +421,7 @@ def main():
         # n = 0
         time.sleep(1) # Wait for telemetry to start
         while True:
+            time.sleep(1)
             command = input("\n Enter 't' for takeoff, 's' for swarm, 'h' for hold, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
 
             if command.lower() == 'q':
@@ -458,6 +461,7 @@ def main():
 
 
             # Send command
+            time.sleep(1)
             # trigger_time = int(time.time()) + int(n)  # Now + n seconds
             send_command(mission)
 
