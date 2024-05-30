@@ -377,6 +377,7 @@ def send_command(mission_var):
 
     try:
         print(f"sending command: {mission_var}")
+        time.sleep(1)
         timer = threading.Timer(10.0, cmd_timeout)
         timer.start()
         # print(f"drone ack: {check_all_drone_ack()}")
@@ -393,6 +394,7 @@ def send_command(mission_var):
         timer.cancel()
         for drone in drones.values():
             drone.gcs_msn_ack = False
+        logger.info("send command done")
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
@@ -408,6 +410,8 @@ def cmd_timeout():
             f"msn 101".encode('utf-8')[:50]
         )
         time.sleep(0.2)
+    for drone in drones.values():
+        drone.gcs_msn_ack = False
 
 
 # -------- MAIN CODE -------- #
@@ -472,8 +476,7 @@ def main():
         # When KeyboardInterrupt happens or an error occurs, stop the telemetry threads
         stop_state_tracking(state_update_thread, executor)
         cmd_send_master.close()
-
-
+    
     logger.info("Exiting the application...")
 
 
