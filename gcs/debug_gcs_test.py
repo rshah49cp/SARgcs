@@ -374,7 +374,8 @@ def send_command(mission):
     try:
         timer = threading.Timer(10.0, cmd_timeout)
         timer.start()
-
+        print(f"drone ack: {check_all_drone_ack()}")
+        print(f"timer alive: {timer.is_alive()}")
         while (check_all_drone_ack() is False and timer.is_alive()):
             print("sending")
             # Send the command data
@@ -387,6 +388,7 @@ def send_command(mission):
         timer.cancel()
         for drone in drones.values():
             drone.gcs_msn_ack = False
+        print("send done")
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
@@ -395,67 +397,80 @@ def send_command(mission):
 def cmd_timeout():
     # Emergency Ground All Drones if no ACK is recieved
     print("WARNING: COMMAND TIMEOUT, EMERGENCY LANDING DRONES")
-    temp = 0
-    while temp < 10:
+    # while temp < 10:
+    for i in range(10):
         cmd_send_master.mav.statustext_send(
             mavutil.mavlink.MAV_SEVERITY_INFO,
             f"msn 101".encode('utf-8')[:50]
         )
-        temp += 1
         time.sleep(0.2)
 
 
 # -------- MAIN CODE -------- #
-try:
-    
-    # Start the telemetry thread
-    state_update_thread = start_state_tracking()
+def main():
+    try:
+        # Start the telemetry thread
+        state_update_thread = start_state_tracking()
 
-    # Main loop for command input
-    mission = 0
-    n = 0
-    time.sleep(1)
-    while True:
-        command = input("\n Enter 't' for takeoff, 's' for swarm, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
+        # Main loop for command input
+        # n = 0
+        time.sleep(1) # Wait for telemetry to start
+        while True:
+            mission = 0
+            command = input("\n Enter 't' for takeoff, 's' for swarm, 'h' for hold, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
 
-        if command.lower() == 'q':
-            break
-        elif command.lower() == 's':
-            mission = 2  # Setting mission to smart_swarm
-            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
+            if command.lower() == 'q':
+                break
+            elif command.lower() == 's':
+                mission = 2  # Setting mission to smart_swarm
+                # n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
             
-        elif command.lower() == 'c':
-            mission = 1  # Setting mission to csv_droneshow
-            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
+            elif command.lower() == 'h':
+                mission = 102  # Setting mission to hold
+
+            elif command.lower() == 'c':
+                mission = 1  # Setting mission to csv_droneshow
+                # n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n")
+                
+            elif command.lower() == 'n':
+                mission = 0  # Unsetting the mission
+                # n = 0  # Unsetting the trigger time
+                continue
+            elif command.lower() == 't':
+                mission = 10
+                # n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
+                
+            elif command.lower() == 'l':
+                mission = 101
+                # n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
             
-        elif command.lower() == 'n':
-            mission = 0  # Unsetting the mission
-            n = 0  # Unsetting the trigger time
-        elif command.lower() == 't':
-            mission = 10
-            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
-            
-        elif command.lower() == 'l':
-            mission = 101
-            n = input("\n Enter the number of seconds for the trigger time (or '0' to cancel): \n") 
-            
-        else:
-            logger.warning("Invalid command.")
+            else:
+                logger.warning("Invalid command.")
+                continue
+
+            if command.lower() != 'n':
+                n = input("\n Type 1 to confirm: \n") 
+                if n != '1':
+                    logger.info("Command canceled.")
+                    continue
 
 
-        # Send command
-        trigger_time = int(time.time()) + int(n)  # Now + n seconds
-        print("here")
-        send_command(mission)
+            # Send command
+            # trigger_time = int(time.time()) + int(n)  # Now + n seconds
+            # print("here")
+            send_command(mission)
 
-except (ValueError, OSError, KeyboardInterrupt) as e:
-    # Catch any exceptions that occur during the execution
-    logger.error(f"An error occurred: {e}")
-finally:
-    # When KeyboardInterrupt happens or an error occurs, stop the telemetry threads
-    stop_state_tracking(state_update_thread, executor)
-    cmd_send_master.close()
+    except (ValueError, OSError, KeyboardInterrupt) as e:
+        # Catch any exceptions that occur during the execution
+        logger.error(f"An error occurred: {e}")
+    finally:
+        # When KeyboardInterrupt happens or an error occurs, stop the telemetry threads
+        stop_state_tracking(state_update_thread, executor)
+        cmd_send_master.close()
 
 
-logger.info("Exiting the application...")
+    logger.info("Exiting the application...")
 
+
+if __name__ == "__main__":
+    main()
