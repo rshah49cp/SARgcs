@@ -376,7 +376,7 @@ def send_command(mission):
         timer.start()
 
         while (check_all_drone_ack() is False and timer.is_alive()):
-            
+            print("sending")
             # Send the command data
             cmd_send_master.mav.statustext_send(
                 mavutil.mavlink.MAV_SEVERITY_INFO,
