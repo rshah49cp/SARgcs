@@ -1,2 +1,2 @@
 hw_id,pos_id,x,y,ip,mavlink_port,debug_port,gcs_ip,serial_port
-24,2,-17.5,-5.0,192.168.0.25,14552,13542,172.17.0.1, ttyACM1
+14,1,0,0,192.168.0.15,14551,13541,172.17.0.1, ttyACM1
