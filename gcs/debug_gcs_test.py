@@ -394,7 +394,7 @@ def send_command(mission_var):
         timer.cancel()
         for drone in drones.values():
             drone.gcs_msn_ack = False
-        logger.info("send command done")
+        print("send command done")
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
