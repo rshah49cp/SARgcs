@@ -298,6 +298,7 @@ def update_state(data):
             set_drone_config(hw_id, None, None, None, None, None, None, None, data.voltage_battery, None, None)
 
 def decode_status_text(text, sys_id): # input text is already split
+    global mission
     components = text # format: msn_#_[ack] [ack] is only added if sent from a drone. ignore if from gcs
     mission_code = [int(component) for component in components if component.isdigit()][0]
     if mission_code and components[2] == 'ack':
@@ -353,12 +354,13 @@ def stop_state_tracking(state_update_thread, executor):
 
 # -------- COMMAND SEND FUNCTIONS -------- #
 def check_all_drone_ack(): # simple loops that checks all drone acks
+    global drones
     for drone in drones.values():
         if drone.gcs_msn_ack is False:
             return False
     return True
 
-def send_command(mission):
+def send_command(mission_var):
     """
     This function prepares and sends commands.
 
@@ -371,24 +373,24 @@ def send_command(mission):
     :param mission: The mission ID.
     :param state: The state value.
     """
+    global drones
     try:
         timer = threading.Timer(10.0, cmd_timeout)
         timer.start()
-        print(f"drone ack: {check_all_drone_ack()}")
-        print(f"timer alive: {timer.is_alive()}")
+        # print(f"drone ack: {check_all_drone_ack()}")
+        # print(f"timer alive: {timer.is_alive()}")
         while (check_all_drone_ack() is False and timer.is_alive()):
             print("sending")
             # Send the command data
             cmd_send_master.mav.statustext_send(
                 mavutil.mavlink.MAV_SEVERITY_INFO,
-                f"msn {mission} ack".encode('utf-8')[:50]
+                f"msn {mission_var} ack".encode('utf-8')[:50]
             )
             time.sleep(0.1)
 
         timer.cancel()
         for drone in drones.values():
             drone.gcs_msn_ack = False
-        print("send done")
 
     except (OSError, struct.error) as e:
         # If there is an OSError or an error in packing the data, log the error
@@ -408,6 +410,7 @@ def cmd_timeout():
 
 # -------- MAIN CODE -------- #
 def main():
+    global mission
     try:
         # Start the telemetry thread
         state_update_thread = start_state_tracking()
@@ -416,7 +419,6 @@ def main():
         # n = 0
         time.sleep(1) # Wait for telemetry to start
         while True:
-            mission = 0
             command = input("\n Enter 't' for takeoff, 's' for swarm, 'h' for hold, 'c' for csv_droneshow, 'l' for land, 'n' for none, 'q' to quit: \n")
 
             if command.lower() == 'q':
@@ -457,7 +459,6 @@ def main():
 
             # Send command
             # trigger_time = int(time.time()) + int(n)  # Now + n seconds
-            # print("here")
             send_command(mission)
 
     except (ValueError, OSError, KeyboardInterrupt) as e:
